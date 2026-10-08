@@ -1,0 +1,156 @@
+name: terraform-test
+
+on:
+  pull_request:
+    paths:
+      - "envs/**"
+      - "projects/**"
+      - "modules/**"
+      - ".github/workflows/terraform-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "envs/**"
+      - "projects/**"
+      - "modules/**"
+      - ".github/workflows/terraform-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> GCP Workload Identity Federation
+
+# Never run two applies against the same state at once.
+concurrency:
+  group: terraform-test
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.9.8
+  TF_IN_AUTOMATION: "true"
+  WORKDIR: envs/test
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_iap_members: ${{ vars.IAP_MEMBERS }}
+
+jobs:
+  # Always runs, needs no cloud credentials.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: fmt
+        run: terraform fmt -check -recursive
+      - name: validate envs/test
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: validate bootstrap
+        working-directory: bootstrap
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  # PRs: plan only. Skipped until the repo variables from bootstrap exist.
+  pr-plan:
+    if: github.event_name == 'pull_request' && vars.GCP_WIF_PROVIDER != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: init
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: plan
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          terraform plan -input=false -no-color -lock=false | tee plan.txt
+          {
+            echo '### Terraform plan (envs/test)'
+            echo '```'
+            tail -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # main / manual: plan, save the plan file, then apply exactly that plan.
+  deploy-plan:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: init
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: plan
+        id: plan
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan | tee plan.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "$code" = "1" ]; then exit 1; fi
+          echo "changes=$([ "$code" = "2" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Terraform plan (envs/test)'
+            echo '```'
+            tail -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.changes == 'true'
+        with:
+          name: tfplan
+          path: ${{ env.WORKDIR }}/tfplan
+          retention-days: 3
+
+  # Re-running this job alone is safe: Terraform refuses a stale saved plan.
+  # Add required reviewers to the "test" environment in repo settings if you
+  # want a manual approval gate before apply.
+  deploy-apply:
+    needs: deploy-plan
+    if: needs.deploy-plan.outputs.changes == 'true'
+    environment: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.WORKDIR }}
+      - name: init
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: apply
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform apply -input=false -auto-approve tfplan

@@ -1,0 +1,22 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.tfstate.lock.info
+
+# Real values stay local — commit only the *.example files
+*.tfvars
+!*.tfvars.example
+
+# Never commit credentials
+*.json
+!**/package.json
+.terraform.lock.hcl

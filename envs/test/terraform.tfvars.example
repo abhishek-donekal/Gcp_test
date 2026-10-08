@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars for local runs (gitignored). CI uses repo variables.
+project_id  = "your-personal-project-id"
+iap_members = ["user:you@gmail.com"]
+# enable_nat = true
