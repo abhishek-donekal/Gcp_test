@@ -83,9 +83,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # main / manual: plan, save the plan file, then apply exactly that plan.
+  # default branch / manual: plan, save the plan file, then apply exactly that plan.
   deploy-plan:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != ''
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && vars.GCP_WIF_PROVIDER != ''
     needs: validate
     runs-on: ubuntu-latest
     outputs:
