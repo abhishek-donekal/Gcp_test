@@ -1,0 +1,56 @@
+name: nightly-destroy
+
+# Tears down everything in envs/test once a day so nothing runs (or bills)
+# overnight. Bootstrap (state bucket, tf-deployer SA, GitHub OIDC) is NOT
+# touched, so `terraform-test` → Run workflow brings it all back.
+#
+# Scheduled runs only fire from the repo's default branch.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC = 11 PM Eastern (EDT) / 10 PM (EST)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# Same group as terraform-test, so a destroy never overlaps an apply.
+concurrency:
+  group: terraform-test
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.9.8
+  TF_IN_AUTOMATION: "true"
+  WORKDIR: envs/test
+  TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+  TF_VAR_iap_members: ${{ vars.IAP_MEMBERS }}
+
+jobs:
+  destroy:
+    if: vars.GCP_WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: init
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - name: destroy
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          terraform destroy -input=false -auto-approve -no-color | tee destroy.txt
+          {
+            echo '### Nightly destroy (envs/test)'
+            echo '```'
+            tail -n 5 destroy.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

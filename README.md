@@ -97,7 +97,20 @@ terraform plan
   `market_code`, `region` and `subnet_cidr`, and add a `module "app-eu"` in
   `envs/test/project-call.tf`.
 
-## Tear down
+## Nightly teardown
+
+`.github/workflows/nightly-destroy.yml` runs `terraform destroy` on
+`envs/test` every day at **03:00 UTC (11 PM Eastern)**, so nothing runs or
+bills overnight. Bootstrap (state bucket, deployer SA, GitHub OIDC) is kept.
+
+- **Bring it back:** Actions → **terraform-test** → **Run workflow** (~3 min).
+- **Kill it now:** Actions → **nightly-destroy** → **Run workflow**.
+- **Change the time:** edit the `cron` line (UTC).
+- Bucket contents and the workspace disk are deleted too — keep anything you
+  need somewhere else.
+- Scheduled runs only fire from the repo's **default branch**.
+
+## Tear down (everything, including bootstrap)
 
 ```bash
 cd envs/test && terraform destroy     # buckets have force_destroy = true
